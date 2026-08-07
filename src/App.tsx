@@ -665,6 +665,102 @@ export default function App() {
     showToast('Backup JSON exported successfully');
   };
 
+  // MIDI Export Function
+  const exportProgressionToMidi = (chordsToExport, title = 'Progression', bpmVal = 120) => {
+    if (!chordsToExport || chordsToExport.length === 0) {
+      showToast('No chords to export');
+      return;
+    }
+
+    const encodeVLQ = (num) => {
+      let value = Math.max(0, Math.floor(num));
+      const buffer = [value & 0x7f];
+      while ((value >>= 7) > 0) {
+        buffer.unshift((value & 0x7f) | 0x80);
+      }
+      return buffer;
+    };
+
+    const PPQ = 480; // Ticks per quarter note
+    const microsecondsPerQuarter = Math.round(60000000 / (bpmVal || 120));
+
+    const trackEvents = [];
+
+    // 1. Set Tempo Meta Event
+    trackEvents.push(
+      0x00, 0xff, 0x51, 0x03,
+      (microsecondsPerQuarter >> 16) & 0xff,
+      (microsecondsPerQuarter >> 8) & 0xff,
+      microsecondsPerQuarter & 0xff
+    );
+
+    // 2. Track Name Meta Event
+    const nameBytes = Array.from(new TextEncoder().encode(title || 'Harmonic Progression'));
+    const nameVLQ = encodeVLQ(nameBytes.length);
+    trackEvents.push(0x00, 0xff, 0x03, ...nameVLQ, ...nameBytes);
+
+    // 3. Convert Chords to Note On / Note Off events
+    chordsToExport.forEach((item) => {
+      const chordType = CHORD_LIBRARY.find(c => c.id === item.chordTypeId) || CHORD_LIBRARY[0];
+      const pitches = generateVoicingPitches(item.rootIndex, chordType, item.voicingType || 'close');
+      const durationBeats = item.durationBeats || 4;
+      const durationTicks = Math.round(durationBeats * PPQ);
+
+      if (!pitches || pitches.length === 0) return;
+
+      // Note On for all pitches (simultaneous start)
+      pitches.forEach((pitch) => {
+        const vlq = encodeVLQ(0);
+        trackEvents.push(...vlq, 0x90, Math.max(0, Math.min(127, pitch)), 0x50);
+      });
+
+      // Note Off for all pitches after durationTicks
+      pitches.forEach((pitch, i) => {
+        const deltaTime = i === 0 ? durationTicks : 0;
+        const vlq = encodeVLQ(deltaTime);
+        trackEvents.push(...vlq, 0x80, Math.max(0, Math.min(127, pitch)), 0x00);
+      });
+    });
+
+    // 4. End of Track Meta Event
+    trackEvents.push(0x00, 0xff, 0x2f, 0x00);
+
+    // Header Chunk: MThd
+    const header = [
+      0x4d, 0x54, 0x68, 0x64,
+      0x00, 0x00, 0x00, 0x06,
+      0x00, 0x00,
+      0x00, 0x01,
+      (PPQ >> 8) & 0xff, PPQ & 0xff
+    ];
+
+    // Track Chunk: MTrk
+    const trackLength = trackEvents.length;
+    const trackHeader = [
+      0x4d, 0x54, 0x72, 0x6b,
+      (trackLength >> 24) & 0xff,
+      (trackLength >> 16) & 0xff,
+      (trackLength >> 8) & 0xff,
+      trackLength & 0xff
+    ];
+
+    const fullData = new Uint8Array([...header, ...trackHeader, ...trackEvents]);
+    const blob = new Blob([fullData], { type: 'audio/midi' });
+
+    const sanitizedTitle = (title || 'progression').toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const filename = `${sanitizedTitle}.mid`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showToast(`Exported "${title}" as MIDI file!`);
+  };
+
   // Restore: Import JSON file
   const handleImportFileChange = (e) => {
     const file = e.target.files[0];
@@ -1281,15 +1377,27 @@ export default function App() {
               )}
             </div>
 
-            {/* Save Progression to Library Action */}
-            <button
-              onClick={() => setIsSaveModalOpen(true)}
-              disabled={progression.length === 0}
-              className="w-full flex items-center justify-center gap-2 py-2.5 bg-[#1C1917] hover:bg-stone-800 text-white rounded font-mono text-xs font-bold transition-colors disabled:opacity-50"
-            >
-              <Save className="w-4 h-4 text-[#C2410C]" />
-              <span>Save Canvas to Library</span>
-            </button>
+            {/* Action Buttons: Save to Library & Export MIDI */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                onClick={() => setIsSaveModalOpen(true)}
+                disabled={progression.length === 0}
+                className="flex items-center justify-center gap-2 py-2.5 bg-[#1C1917] hover:bg-stone-800 text-white rounded font-mono text-xs font-bold transition-colors disabled:opacity-50"
+              >
+                <Save className="w-4 h-4 text-[#C2410C]" />
+                <span>Save to Library</span>
+              </button>
+
+              <button
+                onClick={() => exportProgressionToMidi(progression, progressionTitle, bpm)}
+                disabled={progression.length === 0}
+                className="flex items-center justify-center gap-2 py-2.5 bg-white border border-[#1C1917]/20 hover:border-[#1C1917] hover:bg-stone-50 text-[#1C1917] rounded font-mono text-xs font-bold transition-colors disabled:opacity-50"
+                title="Export progression as standard MIDI (.mid) file"
+              >
+                <Download className="w-4 h-4 text-[#C2410C]" />
+                <span>Export MIDI</span>
+              </button>
+            </div>
           </div>
 
           {/* Section: Progression Library & Presets */}
@@ -1328,13 +1436,25 @@ export default function App() {
                         </p>
                       </div>
 
-                      <button
-                        onClick={(e) => deleteProgressionFromLibrary(item.id, e)}
-                        className="p-1 text-[#1C1917]/40 hover:text-red-600 transition-colors"
-                        title="Delete from Library"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            exportProgressionToMidi(item.chords, item.title, bpm);
+                          }}
+                          className="p-1 text-[#1C1917]/50 hover:text-[#C2410C] transition-colors rounded hover:bg-stone-200/50"
+                          title="Export MIDI file"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={(e) => deleteProgressionFromLibrary(item.id, e)}
+                          className="p-1 text-[#1C1917]/40 hover:text-red-600 transition-colors rounded hover:bg-stone-200/50"
+                          title="Delete from Library"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
 
                     {/* Tags */}
