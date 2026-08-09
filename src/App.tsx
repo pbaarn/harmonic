@@ -850,8 +850,14 @@ export default function App() {
 
     // 3. Convert Chords to Note On / Note Off events
     chordsToExport.forEach((item) => {
-      const chordType = CHORD_LIBRARY.find(c => c.id === item.chordTypeId) || CHORD_LIBRARY[0];
-      const pitches = generateVoicingPitches(item.rootIndex, chordType, item.voicingType || 'close');
+      let pitches = [];
+      if (item.isCustom || item.pitches) {
+        pitches = item.pitches || [];
+      } else {
+        const chordType = CHORD_LIBRARY.find(c => c.id === item.chordTypeId) || CHORD_LIBRARY[0];
+        pitches = generateVoicingPitches(item.rootIndex, chordType, item.voicingType || 'close');
+      }
+
       const durationBeats = item.durationBeats || 4;
       const durationTicks = Math.round(durationBeats * PPQ);
 
@@ -860,14 +866,14 @@ export default function App() {
       // Note On for all pitches (simultaneous start)
       pitches.forEach((pitch) => {
         const vlq = encodeVLQ(0);
-        trackEvents.push(...vlq, 0x90, Math.max(0, Math.min(127, pitch)), 0x50);
+        trackEvents.push(...vlq, 0x90, Math.max(0, Math.min(127, Math.round(pitch))), 0x50);
       });
 
       // Note Off for all pitches after durationTicks
       pitches.forEach((pitch, i) => {
         const deltaTime = i === 0 ? durationTicks : 0;
         const vlq = encodeVLQ(deltaTime);
-        trackEvents.push(...vlq, 0x80, Math.max(0, Math.min(127, pitch)), 0x00);
+        trackEvents.push(...vlq, 0x80, Math.max(0, Math.min(127, Math.round(pitch))), 0x00);
       });
     });
 
@@ -1635,7 +1641,7 @@ export default function App() {
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            exportProgressionToMidi(item.chords, item.title, bpm);
+                            exportProgressionToMidi(item.chords, item.title, item.bpm || bpm);
                           }}
                           className="p-1 text-[#1C1917]/50 hover:text-[#C2410C] transition-colors rounded hover:bg-stone-200/50"
                           title="Export MIDI file"
