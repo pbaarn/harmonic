@@ -7,3 +7,27 @@
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
   }
 }
+
+@keyframes bluePulseFade {
+  0% {
+    background-color: #0284c7;
+    border-color: #38bdf8;
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.9);
+    opacity: 1;
+  }
+  15% {
+    background-color: #0369a1;
+    border-color: #0284c7;
+    opacity: 0.9;
+  }
+  100% {
+    background-color: transparent;
+    border-color: transparent;
+    box-shadow: 0 0 0px transparent;
+    opacity: 0;
+  }
+}
+
+.animate-blue-fade {
+  animation: bluePulseFade 5s cubic-bezier(0.1, 0.8, 0.3, 1) forwards;
+}

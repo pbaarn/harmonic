@@ -149,7 +149,49 @@ function midiToNoteName(midi, useFlats = false) {
   return `${names[pc]}${octave}`;
 }
 
-// Generate specific voicing MIDI pitch numbers
+// Intelligent chord name detector
+function detectChordName(pitches, useFlats = false) {
+  if (!pitches || pitches.length === 0) return null;
+  const names = useFlats ? CHROMATIC_FLATS : CHROMATIC_SHARPS;
+
+  const sortedPitches = [...pitches].sort((a, b) => a - b);
+  const bassPitchClass = (sortedPitches[0] % 12 + 12) % 12;
+  const pitchClasses = Array.from(new Set(sortedPitches.map(p => (p % 12 + 12) % 12))).sort((a, b) => a - b);
+
+  let bestMatch = null;
+
+  for (let r = 0; r < 12; r++) {
+    const rootName = names[r];
+    const intervalsFromRoot = pitchClasses.map(pc => (pc - r + 12) % 12).sort((a, b) => a - b);
+
+    for (const chordType of CHORD_LIBRARY) {
+      const targetIntervals = [...chordType.intervals].map(i => i % 12).sort((a, b) => a - b);
+      const uniqueTarget = Array.from(new Set(targetIntervals)).sort((a, b) => a - b);
+
+      const isExact = intervalsFromRoot.length === uniqueTarget.length &&
+        intervalsFromRoot.every((val, index) => val === uniqueTarget[index]);
+
+      if (isExact) {
+        const slash = (bassPitchClass !== r) ? `/${names[bassPitchClass]}` : '';
+        const score = 100 + (bassPitchClass === r ? 20 : 0);
+        if (!bestMatch || score > bestMatch.score) {
+          bestMatch = { name: `${rootName}${chordType.symbol}${slash}`, score };
+        }
+      } else {
+        const matchedCount = intervalsFromRoot.filter(i => uniqueTarget.includes(i)).length;
+        if (matchedCount === intervalsFromRoot.length && intervalsFromRoot.includes(0)) {
+          const slash = (bassPitchClass !== r) ? `/${names[bassPitchClass]}` : '';
+          const score = 60 + matchedCount * 5 + (bassPitchClass === r ? 10 : 0);
+          if (!bestMatch || score > bestMatch.score) {
+            bestMatch = { name: `${rootName}${chordType.symbol}${slash}`, score };
+          }
+        }
+      }
+    }
+  }
+
+  return bestMatch ? bestMatch.name : null;
+}
 function generateVoicingPitches(rootIndex, chordType, voicingType) {
   // Base root octave 3 (MIDI 48 = C3)
   const rootMidi = 48 + rootIndex;
@@ -256,6 +298,8 @@ export default function App() {
   const [customChordName, setCustomChordName] = useState('Custom Chord');
   const [customPitches, setCustomPitches] = useState([48, 52, 55, 59]); // C3, E3, G3, B3
   const [customDurationBeats, setCustomDurationBeats] = useState(4);
+  const [previewPitches, setPreviewPitches] = useState([]);
+  const [previewTimestamp, setPreviewTimestamp] = useState(0);
 
   // Web Audio Context Reference
   const audioCtxRef = useRef(null);
@@ -652,8 +696,16 @@ export default function App() {
   };
 
   // Custom Chord Editor Handlers
+  const auditionProgressionChord = (pitches) => {
+    if (!pitches || pitches.length === 0) return;
+    setPreviewPitches(pitches);
+    setPreviewTimestamp(Date.now());
+    playTonePitches(pitches, 1.5);
+  };
+
   const openCustomEditorForNew = () => {
     setEditingChordId(null);
+    setPreviewPitches([]);
     setCustomChordName('Custom Chord');
     setCustomPitches([48, 52, 55, 59]); // C3, E3, G3, B3
     setCustomDurationBeats(4);
@@ -662,6 +714,7 @@ export default function App() {
 
   const openCustomEditorForEdit = (item) => {
     setEditingChordId(item.id);
+    setPreviewPitches([]);
     if (item.isCustom) {
       setCustomChordName(item.customName || 'Custom Chord');
       setCustomPitches(item.pitches ? [...item.pitches] : [48, 52, 55, 59]);
@@ -1774,198 +1827,279 @@ export default function App() {
       {/* ==========================================
           MODAL: CUSTOM CHORD EDITOR (3-OCTAVE KEYBOARD)
       ========================================== */}
-      {isCustomEditorOpen && (
-        <div className="fixed inset-0 z-50 bg-[#1C1917]/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white border border-[#1C1917]/30 rounded-xl max-w-4xl w-full p-6 shadow-2xl space-y-5 animate-fade-in overflow-hidden">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-[#1C1917]/15 pb-4">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-[#C2410C]/10 flex items-center justify-center">
-                  <Sliders className="w-4 h-4 text-[#C2410C]" />
-                </div>
-                <div>
-                  <h3 className="font-serif font-bold text-lg text-[#1C1917]">
-                    {editingChordId ? 'Edit Chord in Custom Keyboard' : 'Assemble Custom Chord'}
-                  </h3>
-                  <p className="text-xs font-mono text-[#1C1917]/60">
-                    Click keys on the 3-octave keyboard (C3 to B5) to toggle pitches
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setIsCustomEditorOpen(false)}
-                className="text-[#1C1917]/50 hover:text-[#1C1917] p-1 rounded hover:bg-stone-100 transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+      {isCustomEditorOpen && (() => {
+        const suggestedName = detectChordName(customPitches, useFlats);
 
-            {/* Chord Settings Inputs */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 bg-[#FAF8F5] p-4 rounded-lg border border-[#1C1917]/10 font-mono text-xs">
-              <div>
-                <label className="block text-[#1C1917]/70 font-semibold mb-1">Chord Name / Symbol</label>
-                <input
-                  type="text"
-                  value={customChordName}
-                  onChange={(e) => setCustomChordName(e.target.value)}
-                  className="w-full p-2 bg-white border border-[#1C1917]/20 rounded font-serif font-bold text-sm focus:border-[#C2410C] focus:outline-none"
-                  placeholder="e.g. Cmaj9, Dm7/G..."
-                />
-              </div>
-
-              <div>
-                <label className="block text-[#1C1917]/70 font-semibold mb-1">Duration (Beats)</label>
-                <select
-                  value={customDurationBeats}
-                  onChange={(e) => setCustomDurationBeats(parseInt(e.target.value))}
-                  className="w-full p-2 bg-white border border-[#1C1917]/20 rounded font-mono text-xs focus:border-[#C2410C] focus:outline-none cursor-pointer"
-                >
-                  <option value={2}>2 Beats (1/2 Bar)</option>
-                  <option value={4}>4 Beats (1 Bar)</option>
-                  <option value={6}>6 Beats (3/4 Time)</option>
-                  <option value={8}>8 Beats (2 Bars)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[#1C1917]/70 font-semibold mb-1">Pitches Selected</label>
-                <div className="p-2 bg-white border border-[#1C1917]/20 rounded text-[#C2410C] font-bold truncate">
-                  {customPitches.length > 0
-                    ? customPitches.map(p => midiToNoteName(p, useFlats)).join(' • ')
-                    : 'None selected'}
-                </div>
-              </div>
-            </div>
-
-            {/* 3-Octave Interactive Piano Keyboard */}
-            {(() => {
-              // 3 Octaves: MIDI 48 (C3) to 83 (B5) = 36 keys
-              const editorKeys = [];
-              for (let m = 48; m <= 83; m++) {
-                const pc = (m % 12 + 12) % 12;
-                const octave = Math.floor(m / 12) - 1;
-                const isBlack = [1, 3, 6, 8, 10].includes(pc);
-                const isSelected = customPitches.includes(m);
-                editorKeys.push({ midi: m, pc, octave, isBlack, isSelected, name: noteNames[pc] });
-              }
-
-              const whiteKeys = editorKeys.filter(k => !k.isBlack);
-
-              return (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-xs font-mono text-[#1C1917]/70">
-                    <span className="font-semibold">Interactive 3-Octave Keyboard (C3 – B5):</span>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => transposeCustomPitches(-12)}
-                        className="px-2 py-1 bg-stone-100 hover:bg-stone-200 border border-stone-300 rounded text-[11px]"
-                        title="Shift all notes down 1 octave"
-                      >
-                        -1 Octave
-                      </button>
-                      <button
-                        onClick={() => transposeCustomPitches(12)}
-                        className="px-2 py-1 bg-stone-100 hover:bg-stone-200 border border-stone-300 rounded text-[11px]"
-                        title="Shift all notes up 1 octave"
-                      >
-                        +1 Octave
-                      </button>
-                      <button
-                        onClick={() => setCustomPitches([])}
-                        className="px-2 py-1 bg-stone-100 hover:bg-red-50 text-red-600 border border-stone-300 rounded text-[11px]"
-                      >
-                        Clear Notes
-                      </button>
-                    </div>
+        return (
+          <div className="fixed inset-0 z-50 bg-[#1C1917]/60 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-white border border-[#1C1917]/30 rounded-xl max-w-4xl w-full p-6 shadow-2xl space-y-5 animate-fade-in overflow-hidden">
+              {/* Modal Header */}
+              <div className="flex items-center justify-between border-b border-[#1C1917]/15 pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-[#C2410C]/10 flex items-center justify-center">
+                    <Sliders className="w-4 h-4 text-[#C2410C]" />
                   </div>
+                  <div>
+                    <h3 className="font-serif font-bold text-lg text-[#1C1917]">
+                      {editingChordId ? 'Edit Chord in Custom Keyboard' : 'Assemble Custom Chord'}
+                    </h3>
+                    <p className="text-xs font-mono text-[#1C1917]/60">
+                      Click keys on the 3-octave keyboard (C3 to B5) to toggle pitches
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsCustomEditorOpen(false)}
+                  className="text-[#1C1917]/50 hover:text-[#1C1917] p-1 rounded hover:bg-stone-100 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
 
-                  <div className="relative h-36 w-full bg-[#1C1917] rounded-lg p-2 border border-[#1C1917]/30 select-none overflow-hidden shadow-inner">
-                    {/* Render White Keys */}
-                    <div className="flex h-full w-full gap-[2px]">
-                      {whiteKeys.map((k) => (
+              {/* Chord Settings Inputs */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 bg-[#FAF8F5] p-4 rounded-lg border border-[#1C1917]/10 font-mono text-xs">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[#1C1917]/70 font-semibold">Chord Name / Symbol</label>
+                    {suggestedName && (
+                      <button
+                        type="button"
+                        onClick={() => setCustomChordName(suggestedName)}
+                        className="text-[10px] font-mono font-bold bg-[#C2410C]/15 hover:bg-[#C2410C] text-[#C2410C] hover:text-white px-2 py-0.5 rounded border border-[#C2410C]/40 transition-colors flex items-center gap-1"
+                        title={`Set chord name to suggested "${suggestedName}"`}
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        <span>Use "{suggestedName}"</span>
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    value={customChordName}
+                    onChange={(e) => setCustomChordName(e.target.value)}
+                    className="w-full p-2 bg-white border border-[#1C1917]/20 rounded font-serif font-bold text-sm focus:border-[#C2410C] focus:outline-none"
+                    placeholder="e.g. Cmaj9, Dm7/G..."
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[#1C1917]/70 font-semibold mb-1">Duration (Beats)</label>
+                  <select
+                    value={customDurationBeats}
+                    onChange={(e) => setCustomDurationBeats(parseInt(e.target.value))}
+                    className="w-full p-2 bg-white border border-[#1C1917]/20 rounded font-mono text-xs focus:border-[#C2410C] focus:outline-none cursor-pointer"
+                  >
+                    <option value={2}>2 Beats (1/2 Bar)</option>
+                    <option value={4}>4 Beats (1 Bar)</option>
+                    <option value={6}>6 Beats (3/4 Time)</option>
+                    <option value={8}>8 Beats (2 Bars)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[#1C1917]/70 font-semibold mb-1">Pitches Selected</label>
+                  <div className="p-2 bg-white border border-[#1C1917]/20 rounded text-[#C2410C] font-bold truncate">
+                    {customPitches.length > 0
+                      ? customPitches.map(p => midiToNoteName(p, useFlats)).join(' • ')
+                      : 'None selected'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Contextual Progression Audition Toolbar */}
+              {progression.length > 0 && (
+                <div className="space-y-1.5 font-mono text-xs">
+                  <div className="flex items-center justify-between text-[#1C1917]/70 font-semibold">
+                    <span>Preview Progression Chords in Context:</span>
+                    <span className="text-[10px] text-[#1C1917]/50 italic">Click a chord to play and flash its notes in blue</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 p-2 bg-[#FAF8F5] rounded border border-[#1C1917]/10 max-h-20 overflow-y-auto">
+                    <button
+                      onClick={() => auditionProgressionChord(customPitches)}
+                      disabled={customPitches.length === 0}
+                      className="px-2.5 py-1 text-xs font-mono font-bold bg-[#C2410C] text-white rounded flex items-center gap-1 shadow-sm hover:bg-[#9A3412] disabled:opacity-40"
+                      title="Audition current custom chord"
+                    >
+                      <Play className="w-3 h-3 fill-current" />
+                      <span>This Custom Chord</span>
+                    </button>
+
+                    {progression.map((step, idx) => {
+                      const stepChordType = CHORD_LIBRARY.find(c => c.id === step.chordTypeId) || CHORD_LIBRARY[0];
+                      const stepRootName = step.rootIndex !== undefined ? noteNames[step.rootIndex] : '';
+                      const stepSymbol = step.isCustom ? (step.customName || 'Custom Step') : `${stepRootName}${stepChordType.symbol}`;
+                      const stepPitches = (step.isCustom || step.pitches) ? (step.pitches || []) : generateVoicingPitches(step.rootIndex, stepChordType, step.voicingType || 'close');
+
+                      return (
                         <button
-                          key={k.midi}
-                          onClick={() => toggleCustomPitch(k.midi)}
-                          title={`${k.name}${k.octave} (MIDI ${k.midi})`}
-                          className={`flex-1 rounded-b-md flex flex-col justify-end items-center pb-2 relative transition-all ${
-                            k.isSelected
-                              ? 'bg-amber-100 border-x border-b border-amber-400 shadow-sm'
-                              : 'bg-[#FAF8F5] text-[#1C1917]/50 hover:bg-stone-200 border-x border-b border-stone-300'
-                          }`}
+                          key={step.id}
+                          onClick={() => auditionProgressionChord(stepPitches)}
+                          className="px-2 py-1 text-xs font-mono bg-white border border-[#1C1917]/20 hover:border-[#1C1917] hover:bg-stone-50 rounded flex items-center gap-1 text-[#1C1917] transition-all"
+                          title={`Play step ${idx + 1}: ${stepSymbol}`}
                         >
-                          {k.isSelected ? (
-                            <div className="w-6 h-6 rounded-full bg-[#C2410C] text-white font-bold text-[9.5px] font-mono flex items-center justify-center shadow-md ring-2 ring-orange-300 z-10">
-                              {k.name}{k.octave}
-                            </div>
-                          ) : (
-                            <span className="text-[9px] font-mono opacity-40">{k.name}{k.octave}</span>
-                          )}
+                          <span className="text-[#C2410C] font-bold">{idx + 1}.</span>
+                          <span>{stepSymbol}</span>
                         </button>
-                      ))}
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* 3-Octave Interactive Piano Keyboard */}
+              {(() => {
+                // 3 Octaves: MIDI 48 (C3) to 83 (B5) = 36 keys
+                const editorKeys = [];
+                for (let m = 48; m <= 83; m++) {
+                  const pc = (m % 12 + 12) % 12;
+                  const octave = Math.floor(m / 12) - 1;
+                  const isBlack = [1, 3, 6, 8, 10].includes(pc);
+                  const isSelected = customPitches.includes(m);
+                  editorKeys.push({ midi: m, pc, octave, isBlack, isSelected, name: noteNames[pc] });
+                }
+
+                const whiteKeys = editorKeys.filter(k => !k.isBlack);
+
+                return (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs font-mono text-[#1C1917]/70">
+                      <span className="font-semibold">Interactive 3-Octave Keyboard (C3 – B5):</span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => transposeCustomPitches(-12)}
+                          className="px-2 py-1 bg-stone-100 hover:bg-stone-200 border border-stone-300 rounded text-[11px]"
+                          title="Shift all notes down 1 octave"
+                        >
+                          -1 Octave
+                        </button>
+                        <button
+                          onClick={() => transposeCustomPitches(12)}
+                          className="px-2 py-1 bg-stone-100 hover:bg-stone-200 border border-stone-300 rounded text-[11px]"
+                          title="Shift all notes up 1 octave"
+                        >
+                          +1 Octave
+                        </button>
+                        <button
+                          onClick={() => setCustomPitches([])}
+                          className="px-2 py-1 bg-stone-100 hover:bg-red-50 text-red-600 border border-stone-300 rounded text-[11px]"
+                        >
+                          Clear Notes
+                        </button>
+                      </div>
                     </div>
 
-                    {/* Overlay Black Keys */}
-                    <div className="absolute top-2 left-2 right-2 h-20 pointer-events-none flex">
-                      {editorKeys.map((k) => {
-                        if (!k.isBlack) return null;
-                        const whiteIndexBefore = editorKeys.filter(x => x.midi < k.midi && !x.isBlack).length;
-                        const leftPercent = (whiteIndexBefore / whiteKeys.length) * 100 - 1.9;
-
-                        return (
+                    <div className="relative h-36 w-full bg-[#1C1917] rounded-lg p-2 border border-[#1C1917]/30 select-none overflow-hidden shadow-inner">
+                      {/* Render White Keys */}
+                      <div className="flex h-full w-full gap-[2px]">
+                        {whiteKeys.map((k) => (
                           <button
                             key={k.midi}
                             onClick={() => toggleCustomPitch(k.midi)}
                             title={`${k.name}${k.octave} (MIDI ${k.midi})`}
-                            style={{ left: `${leftPercent}%`, width: '3.1%' }}
-                            className={`absolute top-0 h-full rounded-b-md pointer-events-auto transition-all flex flex-col justify-end items-center pb-1.5 z-20 ${
+                            className={`flex-1 rounded-b-md flex flex-col justify-end items-center pb-2 relative transition-all ${
                               k.isSelected
-                                ? 'bg-stone-900 border border-amber-500 shadow-md'
-                                : 'bg-[#1C1917] border border-stone-700 hover:bg-stone-800'
+                                ? 'bg-amber-100 border-x border-b border-amber-400 shadow-sm'
+                                : 'bg-[#FAF8F5] text-[#1C1917]/50 hover:bg-stone-200 border-x border-b border-stone-300'
                             }`}
                           >
-                            {k.isSelected ? (
-                              <div className="w-5 h-5 rounded-full bg-[#C2410C] text-white font-bold text-[8.5px] font-mono flex items-center justify-center shadow-md ring-2 ring-orange-300 z-30">
-                                {k.name}
+                            {/* Blue Fading Highlight for Progression Auditioning */}
+                            {previewPitches.includes(k.midi) && (
+                              <div
+                                key={`preview-w-${k.midi}-${previewTimestamp}`}
+                                className="absolute inset-0 rounded-b-md pointer-events-none z-20 animate-blue-fade flex flex-col justify-end items-center pb-2"
+                              >
+                                <div className="w-5 h-5 rounded-full bg-sky-500 text-white font-black text-[9px] font-mono flex items-center justify-center shadow-md ring-2 ring-sky-300">
+                                  {k.name}
+                                </div>
                               </div>
-                            ) : null}
+                            )}
+
+                            {k.isSelected ? (
+                              <div className="w-6 h-6 rounded-full bg-[#C2410C] text-white font-bold text-[9.5px] font-mono flex items-center justify-center shadow-md ring-2 ring-orange-300 z-10">
+                                {k.name}{k.octave}
+                              </div>
+                            ) : (
+                              <span className="text-[9px] font-mono opacity-40">{k.name}{k.octave}</span>
+                            )}
                           </button>
-                        );
-                      })}
+                        ))}
+                      </div>
+
+                      {/* Overlay Black Keys */}
+                      <div className="absolute top-2 left-2 right-2 h-20 pointer-events-none flex">
+                        {editorKeys.map((k) => {
+                          if (!k.isBlack) return null;
+                          const whiteIndexBefore = editorKeys.filter(x => x.midi < k.midi && !x.isBlack).length;
+                          const leftPercent = (whiteIndexBefore / whiteKeys.length) * 100 - 1.9;
+
+                          return (
+                            <button
+                              key={k.midi}
+                              onClick={() => toggleCustomPitch(k.midi)}
+                              title={`${k.name}${k.octave} (MIDI ${k.midi})`}
+                              style={{ left: `${leftPercent}%`, width: '3.1%' }}
+                              className={`absolute top-0 h-full rounded-b-md pointer-events-auto transition-all flex flex-col justify-end items-center pb-1.5 z-20 ${
+                                k.isSelected
+                                  ? 'bg-stone-900 border border-amber-500 shadow-md'
+                                  : 'bg-[#1C1917] border border-stone-700 hover:bg-stone-800'
+                              }`}
+                            >
+                              {/* Blue Fading Highlight for Progression Auditioning */}
+                              {previewPitches.includes(k.midi) && (
+                                <div
+                                  key={`preview-b-${k.midi}-${previewTimestamp}`}
+                                  className="absolute inset-0 rounded-b-md pointer-events-none z-30 animate-blue-fade flex flex-col justify-end items-center pb-1"
+                                >
+                                  <div className="w-4 h-4 rounded-full bg-sky-500 text-white font-black text-[8px] font-mono flex items-center justify-center shadow-md ring-2 ring-sky-300">
+                                    {k.name}
+                                  </div>
+                                </div>
+                              )}
+
+                              {k.isSelected ? (
+                                <div className="w-5 h-5 rounded-full bg-[#C2410C] text-white font-bold text-[8.5px] font-mono flex items-center justify-center shadow-md ring-2 ring-orange-300 z-30">
+                                  {k.name}
+                                </div>
+                              ) : null}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
                   </div>
+                );
+              })()}
+
+              {/* Modal Actions */}
+              <div className="flex items-center justify-between pt-3 border-t border-[#1C1917]/15">
+                <button
+                  onClick={() => playTonePitches(customPitches, 1.5)}
+                  disabled={customPitches.length === 0}
+                  className="px-4 py-2 bg-white border border-[#1C1917]/20 hover:border-[#1C1917] hover:bg-stone-50 text-[#1C1917] rounded font-mono text-xs font-bold flex items-center gap-1.5 transition-colors disabled:opacity-40"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current text-[#C2410C]" />
+                  <span>Preview Audio</span>
+                </button>
+
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setIsCustomEditorOpen(false)}
+                    className="px-4 py-2 border border-[#1C1917]/20 rounded text-xs font-mono font-medium hover:bg-stone-100"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={saveCustomChord}
+                    className="px-5 py-2 bg-[#C2410C] hover:bg-[#9A3412] text-white rounded text-xs font-mono font-bold transition-colors shadow-sm"
+                  >
+                    {editingChordId ? 'Save Chord Changes' : 'Add to Progression'}
+                  </button>
                 </div>
-              );
-            })()}
-
-            {/* Modal Actions */}
-            <div className="flex items-center justify-between pt-3 border-t border-[#1C1917]/15">
-              <button
-                onClick={() => playTonePitches(customPitches, 1.5)}
-                disabled={customPitches.length === 0}
-                className="px-4 py-2 bg-white border border-[#1C1917]/20 hover:border-[#1C1917] hover:bg-stone-50 text-[#1C1917] rounded font-mono text-xs font-bold flex items-center gap-1.5 transition-colors disabled:opacity-40"
-              >
-                <Play className="w-3.5 h-3.5 fill-current text-[#C2410C]" />
-                <span>Preview Audio</span>
-              </button>
-
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setIsCustomEditorOpen(false)}
-                  className="px-4 py-2 border border-[#1C1917]/20 rounded text-xs font-mono font-medium hover:bg-stone-100"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={saveCustomChord}
-                  className="px-5 py-2 bg-[#C2410C] hover:bg-[#9A3412] text-white rounded text-xs font-mono font-bold transition-colors shadow-sm"
-                >
-                  {editingChordId ? 'Save Chord Changes' : 'Add to Progression'}
-                </button>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Footer */}
       <footer className="border-t border-[#1C1917]/15 mt-16 py-6 bg-[#FAF8F5]">
