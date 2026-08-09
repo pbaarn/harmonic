@@ -266,7 +266,7 @@ export default function App() {
   const [degreeFilter, setDegreeFilter] = useState('all'); // 'all', '1', '3', '5', '7', 'ext'
   const [familyFilter, setFamilyFilter] = useState('all'); // 'all', 'Triad', '7th', 'Extended', 'Altered'
   const [activeVoicingMap, setActiveVoicingMap] = useState({}); // { [chordKey]: voicingTypeId }
-  const [instrumentPreset, setInstrumentPreset] = useState('rhodes'); // 'rhodes', 'piano', 'pad', 'organ'
+  const [instrumentPreset, setInstrumentPreset] = useState('organ'); // 'organ', 'rhodes', 'piano', 'pad'
   const [masterVolume, setMasterVolume] = useState(0.75);
   const [autoPlayEnabled, setAutoPlayEnabled] = useState(true);
 
@@ -401,22 +401,49 @@ export default function App() {
 
       if (instrumentPreset === 'rhodes') {
         osc.type = 'sine';
-        // Reduced bell overtone gain to eliminate digital clipping/distortion
-        const osc2 = ctx.createOscillator();
-        const osc2Gain = ctx.createGain();
-        osc2.type = 'triangle';
-        osc2.frequency.setValueAtTime(freq * 2, now);
-        osc2Gain.gain.setValueAtTime(0.04, now);
-        osc2Gain.gain.exponentialRampToValueAtTime(0.0001, now + duration * 0.7);
-        osc2.connect(masterGainNode);
-        osc2.start(now);
-        osc2.stop(now + duration);
+        const fundamentalGain = ctx.createGain();
 
-        // Scaled note gain with safe headroom per pitch count
-        const targetGain = 0.15 / Math.max(Math.sqrt(pitches.length), 1.5);
-        noteGain.gain.setValueAtTime(0.0001, now);
-        noteGain.gain.linearRampToValueAtTime(targetGain, now + 0.02);
-        noteGain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+        // Secondary bell tine overtone
+        const bellOsc = ctx.createOscillator();
+        const bellGain = ctx.createGain();
+        bellOsc.type = 'sine';
+        bellOsc.frequency.setValueAtTime(freq * 2, now);
+
+        // Warm lowpass filter to eliminate harsh digital overtones
+        const lpFilter = ctx.createBiquadFilter();
+        lpFilter.type = 'lowpass';
+        lpFilter.frequency.setValueAtTime(Math.min(freq * 3.5, 2800), now);
+
+        const voiceHeadroom = 0.15 / Math.max(Math.sqrt(pitches.length), 1.2);
+
+        // Fundamental envelope
+        fundamentalGain.gain.setValueAtTime(0.0001, now);
+        fundamentalGain.gain.linearRampToValueAtTime(voiceHeadroom, now + 0.015);
+        fundamentalGain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+        // Bell overtone envelope (subtle attack chime)
+        bellGain.gain.setValueAtTime(0.0001, now);
+        bellGain.gain.linearRampToValueAtTime(voiceHeadroom * 0.2, now + 0.008);
+        bellGain.gain.exponentialRampToValueAtTime(0.0001, now + Math.min(0.3, duration * 0.5));
+
+        // Connect bell through bellGain into lowpass filter
+        bellOsc.connect(bellGain);
+        bellGain.connect(lpFilter);
+
+        // Connect fundamental through fundamentalGain into lowpass filter
+        osc.connect(fundamentalGain);
+        fundamentalGain.connect(lpFilter);
+
+        // Connect filter output to master
+        lpFilter.connect(masterGainNode);
+
+        const startOffset = now + index * 0.012;
+        osc.frequency.setValueAtTime(freq, now);
+        osc.start(startOffset);
+        osc.stop(now + duration);
+        bellOsc.start(startOffset);
+        bellOsc.stop(now + duration);
+        return;
 
       } else if (instrumentPreset === 'piano') {
         osc.type = 'triangle';
